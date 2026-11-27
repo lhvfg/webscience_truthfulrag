@@ -1,0 +1,83 @@
+% X.4.1–X.4.2 探究实验（方法假设）—— 负责人：Sean
+% 数据来源：results/trace_*.jsonl（Hakimi 运行 R1/R2 时产生）
+% 脚本：experiments/analysis/e1_entropy.py, e2_filters.py, e3_funnel.py
+% 图：figure/cl_method/ ；表：experiments/out/cl_method/
+
+\paragraph{共同设置。}
+本节实验全部复用复现实验（第~\ref{sec:cl-repro}~小节）中 TruthfulRAG 的运行记录。
+我们在开源代码中加入了逐题记录，保存每道题的知识图谱规模、全部候选路径及其熵值 $H$ 与 $\Delta H$、被保留的路径编号以及最终答案。
+记录逻辑只在原有计算之外附加输出，不改变方法的行为。我们还按式（\ref{eq:cl-coderule}）独立重写了一遍选择规则，在离线测试中，它选出的路径与原实现记录的路径完全一致；E2 中的“代码规则”正是基于这一重写版本。
+一条路径“含答案”的判定方法是：按官方评测脚本的规则归一化后，金标准答案作为完整词组出现在路径文本中。
+对反事实数据集（MuSiQue、SQuAD），金标准是检索文本中被篡改后的答案，也就是方法应当“跟随”的那个答案。
+模型为 GPT-4o-mini，每个数据集抽取样本 \cltodo{N}~条。
+
+% ---------------------------------------------------------------------
+\subsubsection{熵过滤机制是否成立（E1、E2）}
+\label{sec:cl-e1}
+
+\paragraph{E1：$\Delta H$ 能否识别“纠正性路径”。}
+如果假设 A2 成立，含答案的路径应当系统性地具有更大的 $\Delta H$。
+我们把所有候选路径按“是否含答案”分为两组，比较两组 $\Delta H$ 的分布，并报告三个指标：
+（1）以 $\Delta H$ 为打分、区分两组的 AUC（0.5 即等同于随机）；
+（2）单侧 Mann--Whitney U 检验的 $p$ 值；
+（3）在至少有一条含答案路径的题目中，$\Delta H$ 最大的那条路径恰好含答案的比例（Hit@1），并与随机排序下的期望值对比。
+
+\begin{figure}[htbp]
+  \centering
+  \clfig{figure/cl_method/e1_dh_by_label.pdf}{0.85\textwidth}
+  \caption{含答案路径与不含答案路径的 $\Delta H$ 分布（横线为中位数，虚线为 $\Delta H=0$）}
+  \label{fig:cl-e1}
+\end{figure}
+
+\cltodo{表：各数据集的路径数、含答案比例、两组平均 $\Delta H$、AUC、$p$ 值、Hit@1（来自 \texttt{e1\_entropy.tex}）}
+
+\cltodo{结果分析：AUC 是否显著高于 0.5；含答案路径中 $\Delta H>0$ 的比例；在 golden（无冲突）数据上，含答案路径的 $\Delta H$ 是否转为负值——若是，则说明熵升高反映的是“与记忆冲突”，而不是“对答题有用”，从而支持 H1}
+
+\paragraph{E2：过滤策略对比。}
+候选路径及其熵值均已记录，因此更换过滤规则时只需重做最后一步生成（每题 1 次调用）。我们比较以下策略：
+\begin{itemize}
+  \item \textbf{代码规则}：式（\ref{eq:cl-coderule}），即原始实现；
+  \item \textbf{论文规则}：只保留 $\Delta H_p>\tau$ 的路径；
+  \item \textbf{全部保留}：不过滤，对应代码自带的消融设置；
+  \item \textbf{随机}：随机保留与代码规则同样数量的路径；
+  \item \textbf{反向}：保留 $\Delta H$ 最\emph{小}的同样数量的路径；
+  \item \textbf{不加路径}：只用问题和原始上下文，提示格式不变。
+\end{itemize}
+其中，“随机”和“反向”用来检验 $\Delta H$ 排序本身是否有价值；“不加路径”用来衡量整个知识图谱分支的净贡献。
+我们还在 $\tau\in\{0,0.5,1,2,3\}$ 上扫描论文规则，统计“保留路径中含答案”和“一条路径都没保留”的题目比例。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.48\textwidth}\centering
+    \clfig{figure/cl_method/e2_accuracy.pdf}{\linewidth}
+  \end{minipage}\hfill
+  \begin{minipage}{0.48\textwidth}\centering
+    \clfig{figure/cl_method/e2_tau_coverage.pdf}{\linewidth}
+  \end{minipage}
+  \caption{左：不同过滤策略的平均准确率；右：论文规则下阈值 $\tau$ 对保留结果的影响}
+  \label{fig:cl-e2}
+\end{figure}
+
+\cltodo{表：各策略在各数据集上的准确率（来自 \texttt{e2\_accuracy.tex}）}
+
+\cltodo{结果分析：代码规则与“随机”、“反向”、“不加路径”之间的差距；论文规则在 $\tau=1$ 时空集的比例；据此判断 H2}
+
+% ---------------------------------------------------------------------
+\subsubsection{流水线逐级损失与错误归因（E3）}
+\label{sec:cl-e3}
+
+为定位答案在哪一步丢失，我们逐题检查答案是否依次出现在：
+S1 原始检索文本、S2 构建出的知识图谱、S3 候选路径、S4 被保留的路径中，以及 S5 最终是否答对。
+由于最终提示中仍包含完整的原始上下文（第~\ref{sec:cl-modules}~小节），S5 并不受 S4 约束。
+因此我们额外比较“保留路径含答案”与“保留路径不含答案”两种情况下的准确率，以区分模型的正确答案究竟来自路径，还是来自原文。
+
+\begin{figure}[htbp]
+  \centering
+  \clfig{figure/cl_method/e3_funnel.pdf}{\textwidth}
+  \caption{各数据集上答案的逐级保留率（虚线为标准 RAG 的准确率）}
+  \label{fig:cl-e3}
+\end{figure}
+
+\cltodo{结果分析：最大的一级损失发生在哪里（S1→S2 抽取，还是 S2→S3 检索）；反事实数据上 S1→S2 的损失是否明显高于 golden 数据（即 A3 中的“抽取时被模型先验改正”）；S4 不成立时的准确率}
+
+\cltodo{（P1）人工归因：从答错的样本中抽取 30 条，归入抽取错误、检索遗漏、过滤误删、生成错误四类，并给出一个典型案例}

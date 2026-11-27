@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.env
+# run outputs: share traces explicitly when needed
+results/
+runs/
+kg_cache/
+experiments/_mock/
+experiments/out/

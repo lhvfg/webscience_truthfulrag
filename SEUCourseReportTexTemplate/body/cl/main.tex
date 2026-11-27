@@ -1,0 +1,30 @@
+% =====================================================================
+% TruthfulRAG 模块（Sean：方法分析；Hakimi：实验分析）
+% 主入口：thesis.tex 中 \include{body/cl/main}
+% 每个小节一个文件，文件头注明负责人；只改自己负责的文件。
+% =====================================================================
+\providecommand{\cltodo}[1]{\textcolor{red}{[待补：#1]}}
+% 图片若尚未生成，则显示占位框，保证随时可编译
+\providecommand{\clfig}[2]{\IfFileExists{#1}{\includegraphics[width=#2]{#1}}{\fbox{\parbox{#2}{\centering\cltodo{图片 \texttt{\detokenize{#1}} 尚未生成}}}}}
+
+\section{TruthfulRAG：基于知识图谱的 RAG 事实级冲突消解}
+\label{sec:cl}
+
+\input{body/cl/s1_overview}               % X.1   Sean
+\input{body/cl/s2_method}                 % X.2   Sean
+\input{body/cl/s3_reproduction}           % X.3   Hakimi
+
+\subsection{探究实验}
+\label{sec:cl-probe}
+本节的实验围绕第~\ref{sec:cl-method-summary}~小节提出的四个假设展开：
+\ref{sec:cl-e1}、\ref{sec:cl-e3}~小节检验方法自身的设计假设，
+\ref{sec:cl-r3}、\ref{sec:cl-r4}~小节检验论文实验结论的可靠性与可推广性。
+\input{body/cl/s4a_probe_method}          % X.4.1–X.4.2  Sean
+\input{body/cl/s4b_probe_experiment}      % X.4.3–X.4.4  Hakimi
+
+\subsection{综合讨论：局限与改进方向}
+\label{sec:cl-discussion}
+\input{body/cl/s5a_discussion_method}     % X.5 前半  Sean
+\input{body/cl/s5b_discussion_experiment} % X.5 后半  Hakimi
+
+\input{body/cl/s6_summary}                % X.6   Hakimi

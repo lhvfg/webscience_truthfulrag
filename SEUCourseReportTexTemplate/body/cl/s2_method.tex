@@ -1,0 +1,165 @@
+% X.2 方法剖析 —— 负责人：Sean
+\subsection{方法剖析}
+\label{sec:cl-method}
+
+本节的分析同时依据论文正文和作者开源的代码。我们逐函数阅读了实现，下文提到的代码位置均以“文件名中的函数名”标注，便于核对。
+分析按“问题形式化 → 三个模块 → 论文与实现的对照 → 优缺点与待检验假设”的顺序展开。
+
+% ---------------------------------------------------------------------
+\subsubsection{问题形式化与设计动机}
+\label{sec:cl-formal}
+
+记 LLM 为 $\mathcal{M}$，问题为 $q$，检索到的上下文为 $C$。
+模型只凭参数知识作答时的输出分布为 $p_{\mathcal{M}}(y\mid q)$，给定上下文后为 $p_{\mathcal{M}}(y\mid q, C)$。
+令 $a_{\text{param}}=\arg\max_y p_{\mathcal{M}}(y\mid q)$ 为模型“记住的”答案，$a_{\text{ctx}}$ 为上下文 $C$ 支持的答案。
+\textbf{知识冲突}即 $a_{\text{param}}\neq a_{\text{ctx}}$ 的情形。论文采取“外部知识优先”的立场，目标是让最终输出等于 $a_{\text{ctx}}$。
+这一立场隐含了一个前提：外部知识是对的。我们在下文把它记作假设~A1。
+
+\paragraph{为什么是“事实级”。}
+我们对这一动机的理解是：冲突往往只集中在\textbf{极少数}事实上。
+以论文附录的例子为例，检索文本把“新拉雷多市所在的州”从 Tamaulipas 改成了 Sinaloa，而同一段文字中其余几十条事实都与模型的记忆一致。
+在整段文本上做“语义级”比较时，这一条冲突会被大量一致的信息稀释；在输出词元上做“词元级”调整时，方法又并不知道是哪条事实引起了分歧。
+若把文本拆成三元组，冲突就被定位到一条边（Nuevo Laredo, located\_in, Sinaloa）上，可以单独处理。
+
+\paragraph{方法的实质。}
+值得注意的是，TruthfulRAG 并\textbf{没有}显式地把模型的参数知识写成三元组、再与外部三元组逐条比对（FaithfulRAG 正是这样做的\upcite{zhang2025faithfulrag}）。
+它采用的是一个\textbf{间接探针}：如果把某条路径加入提示后模型变得更不确定，就推断这条路径与模型的信念相矛盾。
+因此，我们把这个方法概括为三步：“\textbf{结构化重写} + \textbf{基于不确定性的路径选择} + \textbf{提示增强}”。
+它能否奏效，取决于以下四个隐含假设：
+\begin{description}
+  \item[A1 外部知识可信。] 冲突时外部知识总是对的。若检索内容本身有误（如被投毒或已过时），方法会主动放大错误。
+  \item[A2 熵升高意味着“纠正性”。] 加入路径后熵升高 $\Leftrightarrow$ 路径与参数知识冲突 $\Leftrightarrow$ 路径对答题有用。但无关或嘈杂的信息同样会让模型变得不确定；反之，一条与模型记忆\emph{一致}的正确路径会降低熵，却同样是答题所需的。
+  \item[A3 三元组抽取是忠实的。] 抽取由同一个 LLM 完成。面对反事实文本，模型可能用自己的先验“悄悄改正”原文，或干脆漏抽，这样冲突在抽取阶段就已经被抹掉了。
+  \item[A4 答案位于查询实体的两跳之内。] 检索只做两跳遍历，而 MuSiQue 等多跳问题可能需要三到四跳。
+\end{description}
+
+% ---------------------------------------------------------------------
+\subsubsection{三个模块的逐一分析}
+\label{sec:cl-modules}
+
+\paragraph{（1）图构建。}
+论文的描述是：先对检索内容做语义分段，再用 LLM 逐段抽取三元组 $(h,r,t)$，汇总成图 $\mathcal{G}=(\mathcal{E},\mathcal{R},\mathcal{T})$。
+代码中的实现（\texttt{modules.py} 中的 \texttt{generate\_knowledge\_graph}）是：
+按 1024 个 token、重叠 128 的窗口切分文本；
+对每个分块调用一次抽取提示，再追加一轮“继续抽取”（gleaning），即每个分块固定 2 次 LLM 调用；
+输出的实体带有名称、类型和一段自由文本描述，关系带有描述、关键词和权重；
+同名实体合并，描述拼接。
+这一流程与 LightRAG\upcite{guo2024lightrag} 的图构建实现高度一致。
+我们注意到三点：
+\begin{itemize}
+  \item \textbf{图是“每题局部”的}：每道题都只用这道题自己的检索文本从零建一张图，答完即清空（\texttt{pipeline.py} 中的 \texttt{make\_knowledge\_graph}）。因此它并非一个持久的知识库，建图成本无法在多道题之间摊销，也无法利用其它文档做交叉验证。
+  \item \textbf{实体对齐只靠名称完全匹配}（统一大写），别名、指代不会合并，同一实体可能分裂成多个节点。
+  \item \textbf{“结构化”是有限度的}：节点和边上挂的都是自然语言描述。最终交给模型的路径文本（见下）大部分仍是自然语言句子，只是按实体和关系组织了起来。
+\end{itemize}
+
+\paragraph{（2）图检索。}
+论文用式（\ref{eq:cl-ref}）对候选路径打分，并取前 $K$ 条：
+\begin{equation}
+  \mathrm{Ref}(p)=\alpha\cdot\frac{|\{e\in p\}\cap\mathcal{E}_{imp}|}{|\mathcal{E}_{imp}|}
+               +\beta\cdot\frac{|\{r\in p\}\cap\mathcal{R}_{imp}|}{|\mathcal{R}_{imp}|}
+  \label{eq:cl-ref}
+\end{equation}
+代码（\texttt{modules.py} 中的 \texttt{\_build\_query\_context}）的实际流程是：
+\begin{enumerate}
+  \item 用 LLM 从问题中抽取至多 5 个实体，以及“答案类型”关键词（从图中已有的实体类型里挑选）；
+  \item 对每个问题实体，在实体名称向量库中检索最相似的 10 个节点（余弦相似度需大于 0.2），作为起点；
+  \item 从每个起点枚举所有两跳路径；找不到路径的孤立起点只保留相似度最高的 20\%；
+  \item 统计每条路径上属于“答案类型”的节点个数；
+  \item 用整个问题在关系向量库中检索若干条边，其中与关键实体相连的边记为“有效边”；一条路径只要包含至少一条有效边，就被保留；
+  \item 删除被其它路径包含的子路径，再把每条路径渲染为“Path / Nodes / Edges”三段文本。
+\end{enumerate}
+这套逻辑与 MiniRAG\upcite{fan2025minirag} 的异构图检索在函数结构和提示模板上高度一致。
+关键在于：第 4、5 步算出的计数\textbf{只用于判断去留，并不用于排序}。最终路径列表按路径长度排列，随后由 \texttt{pipeline.py} 中的 \texttt{run} 直接截取前 30 条送入下一模块。
+换言之，式（\ref{eq:cl-ref}）中的 $\alpha$、$\beta$ 和按得分取前 $K$ 条的操作在代码中并不存在，“选哪几条路径”实际上完全由下一步的熵过滤决定。
+
+\paragraph{（3）基于熵的冲突消解。}
+论文用式（\ref{eq:cl-entropy}）衡量模型输出的不确定性：
+\begin{equation}
+  H\big(P(\cdot\mid \text{ctx})\big) = -\frac{1}{L}\sum_{t=1}^{L}\sum_{i=1}^{k} p_i^{(t)}\log p_i^{(t)},
+  \qquad
+  \Delta H_p = H\big(P(\cdot\mid q,p)\big) - H\big(P(\cdot\mid q)\big),
+  \label{eq:cl-entropy}
+\end{equation}
+并保留 $\Delta H_p>\tau$ 的路径。代码实现（\texttt{modules.py} 中的 \texttt{entropy\_filter}，\texttt{llm/backend.py} 中的 \texttt{cal\_entroy}）有以下细节：
+\begin{itemize}
+  \item 计算 $H(\cdot\mid q)$ 和 $H(\cdot\mid q,p)$ 时，提示中\textbf{不含原始上下文}，只有问题（和选项）以及该条路径；用贪心解码生成，取每个位置概率最高的 10 个词元，重新归一化后按\textbf{自然对数}计算熵（论文写的是 $\log_2$）。
+  \item 生成长度 $L$ 被设为\textbf{金标准答案的 token 数}。也就是说，推理阶段用到了标注信息，存在轻微的标签泄漏。熵是在模型自己生成的前 $L$ 个词元上计算的，而不是在正确答案上。
+  \item 每条候选路径都要单独调用一次模型，每道题共需 $1+|P|$ 次调用（$|P|\le 30$）。
+\end{itemize}
+最关键的差异在于选择规则。代码实际执行的是：
+\begin{equation}
+  \text{keep}(p) = \big[\Delta H_p \ge 0\big] \;\lor\; \Big[\,H_{aug}(p)>0 \;\land\; \frac{H_{base}}{H_{aug}(p)} \le 10^{\tau}\Big],
+  \label{eq:cl-coderule}
+\end{equation}
+然后按 $\Delta H_p$ 从大到小取前 10 条；若一条都不满足，则保留熵最大的那条。
+按式（\ref{eq:cl-coderule}），当 $\tau=1$ 时，一条使熵\emph{下降}的路径只有在熵降到原来的十分之一以下时才会被丢弃；当 $\tau=3$ 时，则要降到千分之一以下。
+因此这条规则几乎等价于“\textbf{全部保留，按 $\Delta H$ 排序取前 10}”，$\tau$ 的作用非常弱。
+这也为论文附录中“$\tau=1$ 与 $\tau=3$ 结果几乎相同”的现象提供了另一种解释：它未必说明方法对超参数鲁棒，更可能只是 $\tau$ 本身几乎不起作用。
+反过来，如果真的按论文写的 $\Delta H_p>\tau$ 执行：在 top-10 重归一化下，每个位置的熵上限为 $\ln 10\approx 2.30$，$\tau=1$ 已是很严格的要求，很多题可能一条路径都留不下来（第~\ref{sec:cl-e1}~小节将验证这一点）。
+
+\paragraph{（4）最终生成。}
+论文写作 $\text{Response}=\mathcal{M}(q\oplus\mathcal{P}_{corrective})$，读者容易理解为用筛选后的路径\emph{替换}原始上下文。
+代码（\texttt{modules.py} 中的 \texttt{predict\_answer}）实际构造的提示同时包含筛选后的路径（标注为 Facts）\textbf{和完整的原始上下文}（标注为 Context），并要求模型“优先依据 Facts，信息不足时再参考 Context”，以思维链加 JSON 的格式输出。
+所以更准确的写法是 $\mathcal{M}(q\oplus\mathcal{P}_{kept}\oplus C)$：方法是在原始上下文之上\textbf{追加}一组被强调的事实，而不是替换上下文。
+这一点直接影响对论文消融实验和“上下文长度”统计的解读。
+
+% ---------------------------------------------------------------------
+\subsubsection{论文描述与开源实现的对照}
+\label{sec:cl-gap}
+
+表~\ref{tab:cl-gap}~汇总了上文发现的差异。需要说明的是，开源代码未必就是论文实验所用的版本，因此我们不把这些差异直接当作论文的错误，而是将它们作为后续实验需要控制或检验的因素。
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \caption{论文描述与开源实现的主要差异}
+  \label{tab:cl-gap}
+  \begin{tabular}{p{1.6cm}p{3.6cm}p{4.4cm}p{4.2cm}}
+    \toprule
+    环节 & 论文描述 & 代码实现 & 影响 \\
+    \midrule
+    路径打分 & 式（\ref{eq:cl-ref}），按 $\mathrm{Ref}(p)$ 取前 $K$ 条 & 无 $\alpha,\beta$；计数只决定去留，按路径长度排序后截取前 30 条 & 检索阶段不做相关性排序，选择完全依赖熵过滤 \\
+    熵的计算 & $\log_2$，答案的 token 分布 & top-10 重归一化，自然对数；生成长度 = 金标准答案长度 & 推理时使用了标注信息；阈值的量纲与论文不同 \\
+    过滤规则 & 保留 $\Delta H_p>\tau$ & 式（\ref{eq:cl-coderule}），再取前 10 条；为空时保留熵最大者 & 几乎全部保留，$\tau$ 作用很弱 \\
+    最终输入 & $q\oplus\mathcal{P}_{corrective}$ & $q\oplus\mathcal{P}_{kept}\oplus C$，提示要求优先依据 Facts & 是“增强”而非“替换” \\
+    知识图谱 & 知识图谱 & 每题从零构建的局部图 & 建图成本无法摊销，没有跨文档校验 \\
+    评测指标 & 准确率 ACC & 归一化后的\emph{预测}是\emph{金标准}的子串即判对；空预测也判对 & 指标偏宽松；我们同时报告严格的精确匹配（EM） \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------
+\subsubsection{方法层面的优缺点小结}
+\label{sec:cl-method-summary}
+
+\paragraph{优点。}
+（1）\textbf{定位粒度合适}：三元组把冲突限定在一条边上，路径文本比原文更短、噪声更少，这与论文图 3 中模型对正确答案更自信的观察相符。
+（2）\textbf{与模型无关、即插即用}：只要能拿到输出词元的对数概率，就能接入任意 RAG 系统，不需要训练。
+（3）\textbf{中间结果可审计}：每条候选路径和它的 $\Delta H$ 都可以记录下来，便于定位错误发生在哪一步。我们正是利用这一点设计了逐级漏斗分析（第~\ref{sec:cl-e3}~小节）。
+
+\paragraph{缺点。}
+（1）\textbf{成本高}：每道题需要“$2\times$ 分块数（建图）$+1$（关键词）$+1+|P|$（熵）$+1$（生成）”次调用。论文附录给出的单题耗时为 36--62 秒，而标准 RAG 仅需 0.4--2.6 秒。
+（2）\textbf{核心信号缺乏直接验证}：A2 是整个方法的立足点，论文只给出了最终准确率，没有直接检验“熵升高的路径是否真的包含正确答案”。
+（3）\textbf{对错误外部知识没有防御}：在 A1 不成立时，方法会把错误信息以“Facts”的形式加以强调。
+（4）\textbf{误差逐级传递}：抽取漏掉或“改正”的事实，后续模块无从恢复（A3、A4）。
+（5）\textbf{依赖标注与对数概率}：生成长度用到了金标准答案；而很多闭源 API 并不提供对数概率。
+
+\paragraph{待检验的假设。}
+基于以上分析，我们提出四个可检验的假设，并与后续实验一一对应，如表~\ref{tab:cl-hypo}~所示。
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \caption{由方法分析得到的假设与对应实验}
+  \label{tab:cl-hypo}
+  \begin{tabular}{p{0.6cm}p{8.6cm}p{2.0cm}p{1.6cm}}
+    \toprule
+    编号 & 假设 & 对应前提 & 实验 \\
+    \midrule
+    H1 & $\Delta H$ 区分“含答案路径”与“不含答案路径”的能力有限 & A2 & E1 \\
+    H2 & 按论文规则过滤会丢掉大量有用路径；代码规则的收益主要来自排序与提示增强，而非“过滤冲突” & A2、实现差异 & E2 \\
+    H3 & 答案主要在抽取、检索阶段丢失，而非在过滤阶段 & A3、A4 & E3 \\
+    H4 & 当外部知识本身有误时，方法比标准 RAG 更容易盲从 & A1 & R3 \\
+    \bottomrule
+  \end{tabular}
+\end{table}

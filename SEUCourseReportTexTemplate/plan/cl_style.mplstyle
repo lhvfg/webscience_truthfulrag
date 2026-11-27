@@ -1,0 +1,63 @@
+# TruthfulRAG 模块共用作图样式
+# 用法：plt.style.use("SEUCourseReportTexTemplate/plan/cl_style.mplstyle")
+#
+# 方法配色约定（色板顺序即下列顺序，按此顺序画图颜色自动一致；手动指定时用这里的色值）
+#   wo_rag      #9AA0A6  灰
+#   w_rag       #4C78A8  蓝
+#   KRE         #72B7B2  青
+#   FaithfulRAG #F58518  橙
+#   TruthfulRAG #E45756  红（本文主角，始终用红）
+#   其它/变体    #54A24B  绿，#B279A2 紫
+# 二分类（如 has_answer=True/False）：True 用 #E45756，False 用 #9AA0A6
+#
+# 中文字体：报告中如需中文标签，按本机已有字体调整 font.sans-serif 的首项
+# （Windows 一般用 Microsoft YaHei 或 SimHei）
+
+# ---- 画布与输出 ----
+figure.figsize       : 4.8, 3.2      # 单栏图；双栏/并排图在代码里改为 (9.6, 3.2)
+figure.dpi           : 150
+savefig.dpi          : 300
+savefig.format       : pdf           # LaTeX 用 PDF 矢量图
+savefig.bbox         : tight
+savefig.pad_inches   : 0.05
+
+# ---- 字体 ----
+font.family          : sans-serif
+font.sans-serif      : Microsoft YaHei, SimHei, Arial, DejaVu Sans
+axes.unicode_minus   : False
+font.size            : 9
+axes.titlesize       : 10
+axes.labelsize       : 9
+xtick.labelsize      : 8
+ytick.labelsize      : 8
+legend.fontsize      : 8
+
+# ---- 坐标轴 ----
+axes.prop_cycle      : cycler('color', ['9AA0A6', '4C78A8', '72B7B2', 'F58518', 'E45756', '54A24B', 'B279A2'])
+axes.spines.top      : False
+axes.spines.right    : False
+axes.linewidth       : 0.8
+axes.edgecolor       : 333333
+axes.labelcolor      : 333333
+axes.titleweight     : bold
+axes.titlepad        : 6
+axes.grid            : True
+axes.grid.axis       : y
+axes.axisbelow       : True
+grid.color           : E5E5E5
+grid.linewidth       : 0.6
+xtick.color          : 333333
+ytick.color          : 333333
+xtick.direction      : out
+ytick.direction      : out
+
+# ---- 线条与标记 ----
+lines.linewidth      : 1.6
+lines.markersize     : 4.5
+patch.linewidth      : 0
+errorbar.capsize     : 2.5
+
+# ---- 图例 ----
+legend.frameon       : False
+legend.loc           : best
+legend.handlelength  : 1.6

@@ -1,0 +1,39 @@
+% X.1 论文概述 —— 负责人：Sean
+\subsection{论文概述}
+\label{sec:cl-overview}
+
+检索增强生成（Retrieval-Augmented Generation, RAG）通过把外部检索到的文档拼接进提示，弥补大语言模型（LLM）参数知识过时或缺失的问题\upcite{lewis2020retrieval,gao2023retrieval}。
+然而，当检索内容与模型在预训练中记住的知识不一致时，就出现了\textbf{知识冲突}：模型可能固执地输出自己记住的旧答案，而忽略检索到的新证据\upcite{longpre2021entity,xie2023adaptive}。
+论文 TruthfulRAG\upcite{liu2026kgconflict}（AAAI 2026）研究的正是这一问题，并且立场明确：在冲突时应当\textbf{信任外部知识}，让模型“跟着检索走”。
+
+论文把已有的冲突消解方法分为两类：
+（1）\textbf{词元级}方法，在解码阶段调整输出词元的概率分布，例如对比有无上下文时的输出分布\upcite{yuan2024discerning,jin2024tug}；
+（2）\textbf{语义级}方法，在文段或陈述层面对齐内部与外部知识，例如 FaithfulRAG 先让模型显式写出自己的参数知识，再与检索内容比对\upcite{zhang2025faithfulrag}。
+作者认为这两类方法的粒度要么过细、要么过粗，无法准确定位“到底是哪一条事实发生了冲突”。
+因此论文提出在\textbf{事实级}——即（头实体，关系，尾实体）三元组的粒度——上表示知识、定位冲突，并称之为第一个用知识图谱解决 RAG 事实级冲突的框架。
+
+\begin{figure}[htbp]
+  \centering
+  \clfig{figure/cl_method/pipeline.png}{0.95\textwidth}
+  \caption{TruthfulRAG 的整体流程（取自论文开源仓库）：图构建 → 图检索 → 基于熵的冲突消解}
+  \label{fig:cl-pipeline}
+\end{figure}
+
+如图~\ref{fig:cl-pipeline}~所示，方法由三个模块串联而成：
+\begin{enumerate}
+  \item \textbf{图构建}：用 LLM 从检索文本中抽取实体、关系及其属性描述，构成知识图谱；
+  \item \textbf{图检索}：从问题中抽取关键实体与关系，在图上做两跳遍历得到候选推理路径，并按路径对关键实体、关系的覆盖程度打分，保留得分最高的路径；
+  \item \textbf{冲突消解}：分别计算“只给问题”和“问题 + 某条路径”两种条件下模型输出的平均熵，若加入路径后熵升高超过阈值 $\tau$，就认为这条路径与模型的参数知识冲突、具有“纠正”价值，予以保留；最后基于保留的路径生成答案。
+\end{enumerate}
+
+论文在 FaithEval\upcite{ming2025faitheval}、MuSiQue\upcite{trivedi2022musique}、SQuAD\upcite{rajpurkar2016squad}（后两者采用 KRE\upcite{ying2024intuitive} 构造的反事实版本）与 RealtimeQA\upcite{kasai2023realtime} 四个数据集、GPT-4o-mini / Qwen2.5-7B / Mistral-7B 三个模型上进行实验。
+主要结论有四点：
+（1）平均准确率在三个模型上均为最好，但领先第二名 FaithfulRAG 的幅度不大（GPT-4o-mini 上 78.8 对 76.5，Qwen2.5-7B 上 78.3 对 78.1，Mistral-7B 上 81.3 对 80.7）；
+（2）在无冲突的“金标准”上下文中也不掉点；
+（3）与自然语言上下文相比，结构化路径使模型对正确答案的对数概率更高，即“更自信”；
+（4）消融实验表明知识图谱模块与冲突消解模块都有贡献。
+
+本报告不再逐条复述论文，而是把重点放在我们自己的分析与补充工作上：
+第~\ref{sec:cl-method}~小节结合开源代码剖析方法的设计假设，并指出论文描述与实现之间的差异；
+第~\ref{sec:cl-repro}~小节复现论文的主要实验；
+第~\ref{sec:cl-probe}~小节针对前面提出的假设设计探究实验加以检验。
