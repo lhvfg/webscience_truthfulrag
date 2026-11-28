@@ -89,7 +89,7 @@ golden 与 negative 文件按 `id` 一一对应：golden 的 `answer` 是真实�
 
 ### 统一设定
 
-- 模型：**只用 GPT-4o-mini**（便宜，能拿到 logprob）；本地 Qwen2.5-7B 列为 P1
+- 模型：**只用 qwen-flash**（DashScope，OpenAI 兼容接口）；这也是生成 trace 的模型。E2 的再生成同样使用 qwen-flash
 - 样本：MuSiQue、SQuAD、FaithEval 各随机抽 **100 条**（固定 `seed=42`），RealtimeQA 用全部 113 条。MuSiQue/SQuAD 的 golden 和 negative 用**同一批 id**
 - 并发：用 asyncio 并发（建议 8–16），否则 400 多题 × 约 36 秒/题，单线程跑不完
 - 缓存：知识图谱、候选路径、每条路径的熵全部写进追踪日志（见第四节），后续换过滤策略时不再重算
