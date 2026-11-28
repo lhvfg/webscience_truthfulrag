@@ -1,30 +1,52 @@
 % =====================================================================
 % TruthfulRAG 模块（Sean：方法分析；Hakimi：实验分析）
 % 主入口：thesis.tex 中 \include{body/cl/main}
-% 每个小节一个文件，文件头注明负责人；只改自己负责的文件。
+% 每个文件头注明负责人；只改自己负责的文件。
 % =====================================================================
 \providecommand{\cltodo}[1]{\textcolor{red}{[待补：#1]}}
 % 图片若尚未生成，则显示占位框，保证随时可编译
-\providecommand{\clfig}[2]{\IfFileExists{#1}{\includegraphics[width=#2]{#1}}{\fbox{\parbox{#2}{\centering\cltodo{图片 \texttt{\detokenize{#1}} 尚未生成}}}}}
+\providecommand{\clfig}[2]{\IfFileExists{#1}{\includegraphics[width=#2]{#1}}{\fbox{\parbox{\dimexpr#2-2\fboxsep-2\fboxrule\relax}{\centering\cltodo{图片 \texttt{\detokenize{#1}} 尚未生成}}}}}
 
-\section{TruthfulRAG：基于知识图谱的 RAG 事实级冲突消解}
+\section{TruthfulRAG：事实级知识冲突消解}
 \label{sec:cl}
 
-\input{body/cl/s1_overview}               % X.1   Sean
-\input{body/cl/s2_method}                 % X.2   Sean
-\input{body/cl/s3_reproduction}           % X.3   Hakimi
+本章研读 AAAI 2026 论文 TruthfulRAG\upcite{liu2026kgconflict}，该文研究检索增强生成中外部检索内容与模型参数知识之间的冲突问题，提出在知识图谱三元组的粒度上定位并消解冲突。
+第~\ref{sec:cl-overview}~节概述论文的研究背景、方法与实验结论。
+其余各节均为本组的工作：
+第~\ref{sec:cl-method}~节结合作者公开的源代码，对照论文描述与实际实现，并评述方法的优势与局限，据此提出若干可检验的假设；
+第~\ref{sec:cl-repro}~节在统一设置下复现论文的主要实验；
+第~\ref{sec:cl-probe}~节针对上述假设设计补充实验；
+第~\ref{sec:cl-discussion}~节讨论方法与实验两方面的局限，并提出改进方向。
 
-\subsection{探究实验}
+\input{body/cl/s1_overview}               % 论文概述    Sean
+\input{body/cl/s2_method}                 % 方法分析    Sean
+\input{body/cl/s3_reproduction}           % 复现实验    Hakimi
+
+% ---------------------------------------------------------------------
+\subsection{补充实验}
 \label{sec:cl-probe}
-本节的实验围绕第~\ref{sec:cl-method-summary}~小节提出的四个假设展开：
-\ref{sec:cl-e1}、\ref{sec:cl-e3}~小节检验方法自身的设计假设，
-\ref{sec:cl-r3}、\ref{sec:cl-r4}~小节检验论文实验结论的可靠性与可推广性。
-\input{body/cl/s4a_probe_method}          % X.4.1–X.4.2  Sean
-\input{body/cl/s4b_probe_experiment}      % X.4.3–X.4.4  Hakimi
 
-\subsection{综合讨论：局限与改进方向}
+本节的实验均由本组自行设计，论文中没有对应内容。
+第~\ref{sec:cl-e1}~至~\ref{sec:cl-e3}~小节检验第~\ref{sec:cl-hypo}~小节提出的假设 H1 至 H3，关注方法内部各环节是否按设计意图工作；
+第~\ref{sec:cl-r3}~与~\ref{sec:cl-r4}~小节检验假设 H4，并评估论文实验结论在统计意义上的可靠性。
+
+为获得方法的中间结果，我们在开源实现中加入了逐题记录。
+对每道题，记录内容包括知识图谱的规模、全部候选路径及其熵值 $H$ 与熵变 $\Delta H$、被保留路径的编号、模型的最终答案以及调用开销。
+记录逻辑只在原有计算之外附加输出，不改变方法的行为。
+本节全部实验复用第~\ref{sec:cl-repro}~节复现实验的记录，模型为 GPT-4o-mini，各数据集的样本与复现实验相同。
+文中将文本中包含标注答案的候选路径称为答案路径，判定时采用官方评测脚本的归一化规则，并要求答案作为完整词组出现。
+对于 MuSiQue 与 SQuAD 的反事实版本，标注答案即检索文本中被篡改后的答案，也就是方法应当跟随的答案。
+
+\input{body/cl/s4a_probe_method}          % E1–E3       Sean
+\input{body/cl/s4b_probe_experiment}      % R3–R4       Hakimi
+
+% ---------------------------------------------------------------------
+\subsection{局限与展望}
 \label{sec:cl-discussion}
-\input{body/cl/s5a_discussion_method}     % X.5 前半  Sean
-\input{body/cl/s5b_discussion_experiment} % X.5 后半  Hakimi
 
-\input{body/cl/s6_summary}                % X.6   Hakimi
+本节综合前文的分析与实验结果，分别从方法设计与实验评估两个层面讨论 TruthfulRAG 的局限，并提出可能的改进方向。
+
+\input{body/cl/s5a_discussion_method}     % 方法层面    Sean
+\input{body/cl/s5b_discussion_experiment} % 实验层面    Hakimi
+
+\input{body/cl/s6_summary}                % 小结        Hakimi

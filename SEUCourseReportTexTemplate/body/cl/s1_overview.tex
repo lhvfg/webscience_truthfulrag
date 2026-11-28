@@ -1,39 +1,76 @@
-% X.1 论文概述 —— 负责人：Sean
+% 论文概述 —— 负责人：Sean
 \subsection{论文概述}
 \label{sec:cl-overview}
 
-检索增强生成（Retrieval-Augmented Generation, RAG）通过把外部检索到的文档拼接进提示，弥补大语言模型（LLM）参数知识过时或缺失的问题\upcite{lewis2020retrieval,gao2023retrieval}。
-然而，当检索内容与模型在预训练中记住的知识不一致时，就出现了\textbf{知识冲突}：模型可能固执地输出自己记住的旧答案，而忽略检索到的新证据\upcite{longpre2021entity,xie2023adaptive}。
-论文 TruthfulRAG\upcite{liu2026kgconflict}（AAAI 2026）研究的正是这一问题，并且立场明确：在冲突时应当\textbf{信任外部知识}，让模型“跟着检索走”。
+本节依次概述论文的研究背景、问题定义、方法框架以及实验设置与结论，内容均依据论文原文整理。
+本组对方法的分析与评价集中在第~\ref{sec:cl-method}~节。
 
-论文把已有的冲突消解方法分为两类：
-（1）\textbf{词元级}方法，在解码阶段调整输出词元的概率分布，例如对比有无上下文时的输出分布\upcite{yuan2024discerning,jin2024tug}；
-（2）\textbf{语义级}方法，在文段或陈述层面对齐内部与外部知识，例如 FaithfulRAG 先让模型显式写出自己的参数知识，再与检索内容比对\upcite{zhang2025faithfulrag}。
-作者认为这两类方法的粒度要么过细、要么过粗，无法准确定位“到底是哪一条事实发生了冲突”。
-因此论文提出在\textbf{事实级}——即（头实体，关系，尾实体）三元组的粒度——上表示知识、定位冲突，并称之为第一个用知识图谱解决 RAG 事实级冲突的框架。
+% ---------------------------------------------------------------------
+\subsubsection{研究背景}
 
-\begin{figure}[htbp]
+检索增强生成（Retrieval-Augmented Generation, RAG）将外部检索得到的文档拼接进提示，用以弥补大语言模型参数知识过时或缺失的不足\upcite{lewis2020retrieval,gao2023retrieval}。
+随着外部知识库不断更新，检索内容与模型在预训练阶段记住的知识可能互相矛盾，这一现象称为知识冲突。
+已有研究表明，发生冲突时模型往往倾向于坚持自身的记忆而忽视检索证据\upcite{longpre2021entity,xie2023adaptive}，从而降低 RAG 系统输出的准确性。
+
+论文将已有的冲突消解方法归为两类。
+词元级方法在解码阶段调整输出词元的概率分布，例如对比有无上下文时的输出分布\upcite{yuan2024discerning,jin2024tug}；
+语义级方法在文段或陈述层面对齐内部与外部知识，例如 FaithfulRAG 先让模型显式写出自身的参数知识，再与检索内容比对\upcite{zhang2025faithfulrag}。
+作者认为两类方法依赖的表示较为零散，难以准确刻画事实之间的关联，因而无法精确定位发生冲突的具体事实。
+
+% ---------------------------------------------------------------------
+\subsubsection{问题定义}
+
+记 $\mathcal{M}$ 为具有参数知识 $\mathcal{K}_p$ 的大语言模型。
+给定问题 $q$，RAG 系统从外部知识库 $\mathcal{K}_e$ 中检索文档，并以问题和检索内容为条件生成回答。
+若存在与 $q$ 相关的两条事实陈述 $f_p\in\mathcal{K}_p$ 与 $f_e\in\mathcal{K}_e$，且二者在事实上不一致，则称发生了知识冲突。
+论文采取外部知识优先的立场，目标是在冲突发生时使模型遵循检索内容作答，同时在无冲突时不损害原有性能。
+围绕这一目标，论文提出了三个技术问题：如何表示事实知识以便检测冲突，如何为给定问题检索并排序相关事实，以及如何使模型在面对冲突证据时做出可靠决策。
+
+% ---------------------------------------------------------------------
+\subsubsection{方法框架}
+
+TruthfulRAG 由图构建、图检索和冲突消解三个模块串联而成，整体流程如图~\ref{fig:cl-pipeline}~所示。
+
+\begin{figure}[tbp]
   \centering
-  \clfig{figure/cl_method/pipeline.png}{0.95\textwidth}
-  \caption{TruthfulRAG 的整体流程（取自论文开源仓库）：图构建 → 图检索 → 基于熵的冲突消解}
+  \clfig{figure/cl_method/pipeline.png}{0.92\textwidth}
+  \caption{TruthfulRAG 的整体流程，依次为图构建、图检索与基于熵的冲突消解（取自论文开源仓库）}
   \label{fig:cl-pipeline}
 \end{figure}
 
-如图~\ref{fig:cl-pipeline}~所示，方法由三个模块串联而成：
-\begin{enumerate}
-  \item \textbf{图构建}：用 LLM 从检索文本中抽取实体、关系及其属性描述，构成知识图谱；
-  \item \textbf{图检索}：从问题中抽取关键实体与关系，在图上做两跳遍历得到候选推理路径，并按路径对关键实体、关系的覆盖程度打分，保留得分最高的路径；
-  \item \textbf{冲突消解}：分别计算“只给问题”和“问题 + 某条路径”两种条件下模型输出的平均熵，若加入路径后熵升高超过阈值 $\tau$，就认为这条路径与模型的参数知识冲突、具有“纠正”价值，予以保留；最后基于保留的路径生成答案。
-\end{enumerate}
+图构建模块将检索内容划分为语义连贯的文段，由模型 $\mathcal{M}$ 从每个文段中抽取三元组 $(h,r,t)$，汇总得到知识图谱 $\mathcal{G}=(\mathcal{E},\mathcal{R},\mathcal{T})$，其中 $\mathcal{E}$、$\mathcal{R}$、$\mathcal{T}$ 分别为实体、关系与三元组集合。
 
-论文在 FaithEval\upcite{ming2025faitheval}、MuSiQue\upcite{trivedi2022musique}、SQuAD\upcite{rajpurkar2016squad}（后两者采用 KRE\upcite{ying2024intuitive} 构造的反事实版本）与 RealtimeQA\upcite{kasai2023realtime} 四个数据集、GPT-4o-mini / Qwen2.5-7B / Mistral-7B 三个模型上进行实验。
-主要结论有四点：
-（1）平均准确率在三个模型上均为最好，但领先第二名 FaithfulRAG 的幅度不大（GPT-4o-mini 上 78.8 对 76.5，Qwen2.5-7B 上 78.3 对 78.1，Mistral-7B 上 81.3 对 80.7）；
-（2）在无冲突的“金标准”上下文中也不掉点；
-（3）与自然语言上下文相比，结构化路径使模型对正确答案的对数概率更高，即“更自信”；
-（4）消融实验表明知识图谱模块与冲突消解模块都有贡献。
+图检索模块先从问题中抽取关键要素，按语义相似度选出最相关的实体集合 $\mathcal{E}_{imp}$ 与关系集合 $\mathcal{R}_{imp}$，再从每个关键实体出发做两跳遍历，得到初始路径集合 $\mathcal{P}_{init}$。
+每条路径按其对关键实体与关系的覆盖程度打分：
+\begin{equation}
+  \mathrm{Ref}(p)=\alpha\,\frac{|\{e\in p\}\cap\mathcal{E}_{imp}|}{|\mathcal{E}_{imp}|}
+               +\beta\,\frac{|\{r\in p\}\cap\mathcal{R}_{imp}|}{|\mathcal{R}_{imp}|},
+  \label{eq:cl-ref}
+\end{equation}
+得分最高的 $K$ 条路径构成 $\mathcal{P}_{super}$。每条路径被展开为路径序列、实体属性与关系属性三部分文本。
 
-本报告不再逐条复述论文，而是把重点放在我们自己的分析与补充工作上：
-第~\ref{sec:cl-method}~小节结合开源代码剖析方法的设计假设，并指出论文描述与实现之间的差异；
-第~\ref{sec:cl-repro}~小节复现论文的主要实验；
-第~\ref{sec:cl-probe}~小节针对前面提出的假设设计探究实验加以检验。
+冲突消解模块以输出熵度量模型的不确定性。设生成答案长度为 $L$，第 $t$ 个位置上前 $k$ 个候选词元的概率为 $p_i^{(t)}$，则
+\begin{equation}
+  H = -\frac{1}{L}\sum_{t=1}^{L}\sum_{i=1}^{k} p_i^{(t)}\log_2 p_i^{(t)} .
+  \label{eq:cl-entropy}
+\end{equation}
+分别计算只给出问题时的熵 $H_{param}$ 与给出问题和路径 $p$ 时的熵 $H_{aug}(p)$，二者之差 $\Delta H_p=H_{aug}(p)-H_{param}$ 被视为冲突的指示量。
+论文认为 $\Delta H_p$ 为正说明该路径与模型的参数知识相矛盾，对模型具有纠正作用，因此保留
+\begin{equation}
+  \mathcal{P}_{corrective}=\{\,p\in\mathcal{P}_{super}\mid \Delta H_p>\tau\,\},
+  \label{eq:cl-paperrule}
+\end{equation}
+并以 $\mathcal{M}(q\oplus\mathcal{P}_{corrective})$ 生成最终回答，其中 $\tau$ 为阈值，$\oplus$ 表示文本拼接。
+
+% ---------------------------------------------------------------------
+\subsubsection{实验设置与主要结论}
+
+论文在四个数据集上评测：FaithEval\upcite{ming2025faitheval} 包含反事实与不一致的上下文；MuSiQue\upcite{trivedi2022musique} 与 SQuAD\upcite{rajpurkar2016squad} 采用 KRE\upcite{ying2024intuitive} 构造的反事实版本；RealtimeQA\upcite{kasai2023realtime} 侧重时效性冲突。
+所用模型为 GPT-4o-mini、Qwen2.5-7B-Instruct 与 Mistral-7B-Instruct。
+对比基线包括不使用检索的直接生成、标准 RAG、提示优化方法 KRE、解码干预方法 COIECD\upcite{yuan2024discerning} 以及 FaithfulRAG，评价指标为准确率。
+
+论文报告的主要结论有四点。
+其一，TruthfulRAG 在三个模型上均取得最高的平均准确率，在 GPT-4o-mini、Qwen2.5-7B 与 Mistral-7B 上分别为 78.8\%、78.3\% 与 81.3\%，次优的 FaithfulRAG 分别为 76.5\%、78.1\% 与 80.7\%。
+其二，在 MuSiQue 与 SQuAD 的无冲突版本上，该方法的准确率不低于标准 RAG。
+其三，与自然语言上下文相比，结构化的推理路径使模型赋予正确答案更高的对数概率。
+其四，消融实验表明图模块与冲突消解模块均对性能有贡献。
